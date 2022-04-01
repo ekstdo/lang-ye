@@ -41,6 +41,15 @@ impl TokenType {
             _ => false 
         }
     }
+
+    fn is_rparen(&self) -> bool {
+        use TokenType::*;
+        match self {
+            ParenRight | BrackRight | CurlyRight => true,
+            _ => false 
+        }
+    }
+
 }
 
 pub type LexErr = (String, (usize, usize));
@@ -405,7 +414,20 @@ pub enum ASTType<'a> {
     Let(Vec<(AST<'a>, Option<AST<'a>>, bool, bool)>), // static, mut
     List(Vec<AST<'a>>),
     Lambda(Vec<AST<'a>>, AST<'a>),
+    While(AST<'a>, AST<'a>),
+    If(AST<'a>, AST<'a>, Option<AST<'a>>),
+    For(AST<'a>, AST<'a>, AST<'a>, Option<AST<'a>>),
+    Block(Vec<AST<'a>>),
     TagStatement(&'a str, Vec<AST<'a>>),
+}
+
+impl<'a> ASTType<'a> {
+    fn needs_semicolon(&self) -> bool {
+        match self {
+            ASTType::While(_, _) | ASTType::If(_, _, _) | ASTType::For(_, _, _,  _) | ASTType::Block(_) => false,
+            _ => true
+        }
+    }
 }
 
 impl<'a> std::fmt::Display for ASTType<'a> {
@@ -506,6 +528,11 @@ pub struct Parser<'a> {
     pub scanner: Scanner<'a>,
 }
 
+#[derive(PartialEq, Debug, Copy, Clone)]
+enum Environment {
+    InParen, InCondition, Nothing
+}
+
 impl<'a> Parser<'a> {
     pub fn new(scanner: Scanner<'a>) -> Parser<'a> {
         let infix_op = HashMap::from([
@@ -514,6 +541,9 @@ impl<'a> Parser<'a> {
             (String::from("="), (8, 7)),
             (String::from("|"), (10, 9)),
             (String::from("<-"), (11, 12)),   // backpassing
+
+            (String::from("in"), (15, 9)),
+
             (String::from("<|"), (10, 9)),   // low prec operator
             (String::from("<||"), (10, 9)),  // uncurry
             (String::from("<|||"), (10, 9)), // uncurry2
@@ -600,6 +630,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_tag(&mut self, tag: Token<'a>) -> ParseResult<'a> {
+        self.scanner.next();
         match tag.slice {
             "#infix" => {
                 let op = self.expect(TokenType::Operator)?;
@@ -628,29 +659,35 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse(&mut self, peeked: Token<'a>) -> ParseResult<'a> {
-        match peeked.type_ {
-            TokenType::Let => {
-                self.scanner.next();
-                self.parse_let(peeked)
-            },
-            TokenType::Tag => {
-                self.scanner.next();
-                self.parse_tag(peeked)
-            }
-            _ => {
-                let res = self.parse_expr(0, false);
+    fn parse(&mut self, peeked: Token<'a>, expect_semicolon: bool) -> ParseResult<'a> {
+        let res = match peeked.type_ {
+            TokenType::Let => self.parse_let(peeked, Environment::Nothing),
+            TokenType::Tag => self.parse_tag(peeked),
+            _ => self.parse_expr(0, Environment::Nothing)
+        }?;
+        if expect_semicolon {
+            let needs_semicolon = res.ttype.needs_semicolon();
+            if needs_semicolon {
                 self.expect(TokenType::Semicolon)?;
-                res
+            } else {
+                let next = match self.scanner.peek() {
+                    Some(n) => n, 
+                    None => return Ok(res)
+                }.map_err(ParseErr::LexErr)?;
+                if next.type_ == TokenType::Semicolon {
+                    self.next();
+                }
             }
         }
+        Ok(res)
     }
 
-    pub fn parse_let(&mut self, peeked: Token<'a>) -> ParseResult<'a> {
+    fn parse_let(&mut self, peeked: Token<'a>, env: Environment) -> ParseResult<'a> {
         let mut mutable = false;
         let mut static_ = false;
         let mut vec = Vec::new();
         let mut expr = true;
+        self.scanner.next();
         loop {
             let res = self.scanner.peek().ok_or(self.err("Unfinished Let statement", peeked.clone()))?.map_err(ParseErr::LexErr)?;
             if res.type_ == TokenType::Mut && !mutable {
@@ -659,10 +696,11 @@ impl<'a> Parser<'a> {
             } else if res.type_ == TokenType::Static && !static_ {
                 static_ = true;
                 self.scanner.next();
-            } else if res.type_ == TokenType::Semicolon {
+            } else if res.type_ == TokenType::Semicolon && env != Environment::InCondition
+                   || res.type_ == TokenType::CurlyLeft && env == Environment::InCondition {
                 break;
             } else if expr {
-                let mut el = self.parse_expr(6, false)?;
+                let mut el = self.parse_expr(6, env)?;
                 let mut help_vec = Vec::new();
                 while let AST { ttype: box ASTType::InfixOp("=", v), .. } = el {
                     let v = v.clone();
@@ -685,7 +723,6 @@ impl<'a> Parser<'a> {
                 static_ = false;
             }
         }
-        self.expect(TokenType::Semicolon)?;
         Ok(Parser::make_atom(ASTType::Let(vec), peeked))
     }
 
@@ -701,7 +738,7 @@ impl<'a> Parser<'a> {
                     Ok(Parser::make_atom(ASTType::OpVariable(tok.slice), tok))
                 } else {
                     self.scanner.cache.push(tok);
-                    let mut res = self.parse_expr(0, true);
+                    let mut res = self.parse_expr(0, Environment::InParen);
                     self.expect(TokenType::ParenRight)?;
                     if let Ok(ast) = &mut res {
                         ast.pos_marker = at;
@@ -710,12 +747,12 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 let rprec = self.infix_op.get(tok.slice).unwrap().1;
-                let rhs = self.parse_expr(rprec, true)?;
+                let rhs = self.parse_expr(rprec, Environment::InParen)?;
                 self.expect(TokenType::ParenRight)?;
                 Ok(Parser::make_atom(ASTType::InfixSndOp(tok.slice, rhs), tok))
             }
         } else {
-            let mut res = self.parse_expr(0, true);
+            let mut res = self.parse_expr(0, Environment::InParen);
             self.expect(TokenType::ParenRight)?;
             if let Ok(ast) = &mut res {
                 ast.pos_marker = at;
@@ -724,15 +761,76 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_block(&mut self, at: Token<'a>) -> ParseResult<'a> {
+        let mut next_token = self.scanner.peek()
+            .ok_or(self.err("unclosed block", at.clone()))?
+            .map_err(ParseErr::LexErr)?;
+        let mut body = Vec::new();
+        loop {
+            let stmt = self.parse(next_token, false)?;
+            body.push(stmt);
+            next_token = self.scanner.peek()
+                .ok_or(self.err("unclosed block", at.clone()))?
+                .map_err(ParseErr::LexErr)?;
+            if next_token.type_ == TokenType::CurlyRight {
+                self.scanner.next();
+                break;
+            } else if next_token.type_ == TokenType::Semicolon {
+                self.scanner.next();
+            } else {
+                return Err(self.err("unknown closing token", at));
+            }
+
+            next_token = self.scanner.peek()
+                .ok_or(self.err("unclosed block", at.clone()))?
+                .map_err(ParseErr::LexErr)?;
+            if next_token.type_ == TokenType::CurlyRight {
+                body.push(Parser::make_atom(ASTType::Unit, next_token));
+                self.scanner.next();
+                break;
+            }
+        }
+
+        Ok(Parser::make_atom(ASTType::Block(body), at))
+    }
+
     fn parse_for(&mut self, at: Token<'a>) -> ParseResult<'a> {
         todo!()
     }
 
     fn parse_while(&mut self, at: Token<'a>) -> ParseResult<'a> {
-        todo!()
+        let tok = self.scanner.peek().ok_or(self.err("Unclosed (", at.clone()))?.map_err(ParseErr::LexErr)?;
+        let cond = if tok.type_ == TokenType::Let {
+            self.parse_let(tok, Environment::InCondition)?
+        } else {
+            self.parse_expr(7, Environment::InCondition)?
+        };
+        let tok = self.expect(TokenType::CurlyLeft)?;
+        let body = self.parse_block(tok)?;
+        Ok(Parser::make_atom(ASTType::While(cond, body), at))
     }
 
-    pub fn parse_expr(&mut self, level: usize, in_paren: bool) -> ParseResult<'a> {
+    fn parse_if(&mut self, at: Token<'a>) -> ParseResult<'a> {
+        let tok = self.scanner.peek().ok_or(self.err("Unclosed (", at.clone()))?.map_err(ParseErr::LexErr)?;
+        let cond = if tok.type_ == TokenType::Let {
+            self.parse_let(tok, Environment::InCondition)?
+        } else {
+            self.parse_expr(7, Environment::InCondition)?
+        };
+        let tok = self.expect(TokenType::CurlyLeft)?;
+        let body = self.parse_block(tok)?;
+
+        let tok = match self.scanner.peek() {
+            Some(t) => t.map_err(ParseErr::LexErr)?,
+            None => return Ok(Parser::make_atom(ASTType::If(cond, body, None), at))
+        };
+        
+
+
+
+    }
+
+    fn parse_expr(&mut self, level: usize, env: Environment) -> ParseResult<'a> {
         let next_token = self.scanner.next()
             .ok_or(ParseErr::LexErr((String::from("Expected token in this expession"), self.scanner.get_pos())))?
             .map_err(ParseErr::LexErr)?;
@@ -743,7 +841,7 @@ impl<'a> Parser<'a> {
             at if at.type_ == TokenType::ParenLeft => self.parse_atom_paren(at),
             at if at.type_ == TokenType::BrackLeft => {
                 let tok = self.scanner.peek().ok_or(self.err("Unclosed [", at))?.map_err(ParseErr::LexErr)?;
-                let res = self.parse_expr(0, false);
+                let res = self.parse_expr(0, Environment::Nothing);
                 self.expect(TokenType::BrackRight)?;
                 match res {
                     Ok(AST { ttype: box ASTType::InfixOp(",", vec), ..}) => Ok(Parser::make_atom(ASTType::List(vec), tok)),
@@ -754,16 +852,16 @@ impl<'a> Parser<'a> {
 
             at if at.type_ == TokenType::Operator => {
                 let prec = *self.prefix_op.get(at.slice).ok_or(self.err("Operator is not a prefix operator", at.clone()))?;
-                let res = self.parse_expr(prec, false)?;
+                let res = self.parse_expr(prec, Environment::Nothing)?;
                 Ok(Parser::make_atom(ASTType::PrefixOp(at.slice, res), at))
             },
 
             at if at.type_ == TokenType::Lambda => {
-                let lhs = self.parse_expr(18, false)?;
+                let lhs = self.parse_expr(18, Environment::Nothing)?;
                 if self.expect(TokenType::Operator)?.slice != "->" {
                     return Err(self.err("expected -> in lambda expression", at))
                 }
-                let rhs = self.parse_expr(8, false)?;
+                let rhs = self.parse_expr(8, Environment::Nothing)?;
                 let mut expansion  = lhs;
                 let mut vars = Vec::new();
 
@@ -775,8 +873,9 @@ impl<'a> Parser<'a> {
                 return Ok(Parser::make_atom(ASTType::Lambda(vars, rhs), at));
             }
 
-            at if at.type_ == TokenType::For => self.parse_for(at),
-            at if at.type_ == TokenType::While => self.parse_while(at),
+            at if at.type_ == TokenType::For => return self.parse_for(at),
+            at if at.type_ == TokenType::While => return self.parse_while(at),
+            at if at.type_ == TokenType::If => self.parse_if(at),
             at => Err(self.err("Expected Atom Token", at))
         }?;
 
@@ -789,7 +888,9 @@ impl<'a> Parser<'a> {
 
             let op = match tok {
                 Err(x) => return Err(ParseErr::LexErr(x)),
-                Ok(sem) if sem.type_ == TokenType::Semicolon || sem.type_ == TokenType::ParenRight || sem.type_ == TokenType::BrackRight => break,
+                Ok(sem) if sem.type_ == TokenType::Semicolon && env != Environment::InCondition
+                        || sem.type_.is_rparen()
+                        || env == Environment::InCondition && sem.type_ == TokenType::CurlyLeft => break,
                 Ok(x) => x
             }.clone();
             let op_str = op.slice;
@@ -801,14 +902,14 @@ impl<'a> Parser<'a> {
                     break;
                 }
 
-                let rhs = self.parse_expr(APPLICATION_LEVEL + 1, in_paren)?;
+                let rhs = self.parse_expr(APPLICATION_LEVEL + 1, env)?;
 
                 lhs = Parser::make_atom(ASTType::Application(lhs, rhs), op);
                 continue;
             }
 
             // expecting certain Tokentypes
-            if op.type_ != TokenType::Operator && op.type_ != TokenType::Reassign  && op.type_ != TokenType::Assign{
+            if op.type_ != TokenType::Operator && op.type_ != TokenType::In && op.type_ != TokenType::Reassign  && op.type_ != TokenType::Assign{
                 return Err(self.err("expected operator", op));
             }
 
@@ -838,7 +939,7 @@ impl<'a> Parser<'a> {
             self.scanner.next();
 
             // enabling stuff like (1/) <$> [1..5]
-            if in_paren { 
+            if env == Environment::InParen { 
                 let tok = self.scanner.peek().ok_or(self.err("unclosed (", op.clone()))?.map_err(ParseErr::LexErr)?;
                 if tok.type_ == TokenType::ParenRight {
                     lhs = Parser::make_atom(ASTType::InfixOp(op_str, vec![lhs]), op);
@@ -847,7 +948,7 @@ impl<'a> Parser<'a> {
             }
 
             // parsing the righthand side of the infix operator
-            let rhs = self.parse_expr(rp, in_paren)?;
+            let rhs = self.parse_expr(rp, env)?;
 
             // make comma seperated stuff to a list instead of nested AST
             if let AST { ttype: box ASTType::InfixOp(",", vec), pos_marker } = &mut lhs {
@@ -890,7 +991,7 @@ impl<'a> Iterator for Parser<'a> {
             Ok(a) => a,
             Err(e) => return Some(Err(ParseErr::LexErr(e)))
         };
-        Some(self.parse(peeked))
+        Some(self.parse(peeked, true))
     }
 }
 
@@ -916,7 +1017,7 @@ mod test {
     #[test]
     fn test_custom_infix_operator(){
         let text = String::from("##defining your own custom operators\n\
-                    #infix <<>> 10 9\n\
+                    #infix <<>> 10 9;\n\
                     a <<>> b;");
         let scanner = Scanner::new(&text);
         let mut parser = Parser::new(scanner);
