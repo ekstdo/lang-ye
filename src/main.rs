@@ -1,7 +1,11 @@
 #![feature(char_indices_offset)]
 #![feature(box_patterns)]
 
+use parser::{AST, ASTType};
+
 mod parser;
+
+use std::{str, io::Write};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
@@ -9,18 +13,22 @@ enum OpCode {
     Return,
     Negate,
     Add, Sub, Mul, Div,
-    Int
+    Int, Bool, Ref, PrintStr,
+    Lt,
+
+    DefineGlobal
 }
 
 struct Chunk {
     code: Vec<u8>,
     values: Vec<u8>,
+    globals: std::collections::HashMap<String, u32>,
     lines: Vec<(u32, u32)>
 }
 
 impl Chunk {
     fn new() -> Chunk {
-        Chunk { code : Vec::new(), values : Vec::new(), lines: Vec::new() }
+        Chunk { code : Vec::new(), values : Vec::new(), lines: Vec::new(), globals: std::collections::HashMap::new() }
     }
 
     fn write_code(&mut self, code: OpCode, line: u32){
@@ -53,7 +61,7 @@ impl Chunk {
                 print!("     | ");
             }
 
-            let simple_instructions = vec![OpCode::Return, OpCode::Negate, OpCode::Add, OpCode::Sub, OpCode::Mul, OpCode::Div];
+            let simple_instructions = vec![OpCode::Return, OpCode::PrintStr, OpCode::Lt, OpCode::Negate, OpCode::Add, OpCode::Sub, OpCode::Mul, OpCode::Div];
             let mut is_simple = false;
 
             for j in simple_instructions {
@@ -73,6 +81,10 @@ impl Chunk {
                 let index = self.get_index(offset);
                 let num = i32::from_le_bytes(self.values[index..index + 4].try_into().unwrap());
                 println!("{:?} : {} at {}", OpCode::Int, num, index);
+                offset += 5;
+            } else if i == OpCode::Ref as u8 {
+                let index = self.get_index(offset);
+                println!("{:?} : at {}", OpCode::Ref, index);
                 offset += 5;
             } else {
                 println!("Unknown opcode!");
@@ -98,6 +110,12 @@ impl Chunk {
         offset
     }
 
+    fn add_slice(&mut self, val: &[u8]) -> usize {
+        let offset = self.values.len();
+        self.values.extend(val);
+        offset
+    }
+
     fn write_value(&mut self, pos: u32, bytes: u32, line: u32){
         let slice : [u8;4] = u32::to_le_bytes(pos as u32).into();
         self.code.extend(slice);
@@ -110,18 +128,17 @@ impl Chunk {
 }
 
 struct VM {
-    chunk: Option<Chunk>,
     ip: usize,
-    stack: Vec<u8>
+    stack: Vec<u8>,
+    stdout: std::io::Stdout
 }
-
-enum InterpretResult {
-    Ok, CompileError, RuntimeError
+enum RuntimeError {
+    StdoutWriteErr(std::io::Error)
 }
 
 impl VM {
     fn new() -> VM {
-        VM { chunk: None, ip: 0, stack: Vec::new() }
+        VM { ip: 0, stack: Vec::new(), stdout: std::io::stdout() }
     }
 
     fn pop_int(&mut self) -> i32 {
@@ -129,11 +146,19 @@ impl VM {
         i32::from_be_bytes([a.unwrap(), b.unwrap(), c.unwrap(), d.unwrap()])
     }
 
+    fn pop_bool(&mut self) -> bool {
+        self.stack.pop().unwrap() != 0
+    }
+
     fn push_int(&mut self, i: i32) {
         self.stack.extend_from_slice(&i32::to_le_bytes(i));
     }
 
-    fn interpret(&mut self, chunk: Chunk) -> InterpretResult {
+    fn push_bool(&mut self, b: bool) {
+        self.stack.push(b as u8);
+    }
+
+    fn interpret(&mut self, chunk: Chunk) -> Result<(), RuntimeError> {
         self.ip = 0;
         loop {
             let instruction = chunk.code[self.ip];
@@ -141,10 +166,14 @@ impl VM {
             if instruction == OpCode::Return as u8 {
                 let return_value = self.pop_int();
                 print!("{}\n", return_value);
-                return InterpretResult::Ok;
+                return Ok(());
             } else if instruction == OpCode::Int as u8 {
                 let index = chunk.get_index(self.ip);
                 self.stack.extend_from_slice(&chunk.values[index..index + 4]);
+                self.ip += 4;
+            } else if instruction == OpCode::Ref as u8 {
+                let index = chunk.get_index(self.ip);
+                self.stack.extend_from_slice(&u32::to_le_bytes(index as u32));
                 self.ip += 4;
             } else if instruction == OpCode::Negate as u8 {
                 let val = self.pop_int();
@@ -152,19 +181,28 @@ impl VM {
             } else if instruction == OpCode::Add as u8 {
                 let val1 = self.pop_int();
                 let val2 = self.pop_int();
-                self.push_int(val1 + val2);
+                self.push_int(val2 + val1);
             } else if instruction == OpCode::Sub as u8 {
                 let val1 = self.pop_int();
                 let val2 = self.pop_int();
-                self.push_int(val1 - val2);
+                self.push_int(val2 - val1);
             } else if instruction == OpCode::Mul as u8 {
                 let val1 = self.pop_int();
                 let val2 = self.pop_int();
-                self.push_int(val1 * val2);
+                self.push_int(val2 * val1);
             } else if instruction == OpCode::Div as u8 {
                 let val1 = self.pop_int();
                 let val2 = self.pop_int();
-                self.push_int(val1 + val2);
+                self.push_int(val2 / val1);
+            } else if instruction == OpCode::Lt as u8 {
+                let val1 = self.pop_int();
+                let val2 = self.pop_int();
+                self.push_bool(val2 < val1);
+            } else if instruction == OpCode::PrintStr as u8 {
+                let strslice = self.pop_int() as usize;
+                let strlen = self.pop_int() as usize;
+                let string = &chunk.values[strslice..strslice + strlen];
+                self.stdout.write(string).map_err(RuntimeError::StdoutWriteErr)?;
             } else {
                 println!("Unknown opcode!");
             } 
@@ -172,45 +210,112 @@ impl VM {
             self.ip += 1;
         }
     }
+
+    fn compile<'a>(&self, chunk: &mut Chunk, ast: &AST<'a>) -> Result<(), &'static str> {
+        match &*ast.ttype {
+            ASTType::Integer(i) => {
+                chunk.write_code(OpCode::Int, ast.pos_marker.line as u32);
+                let pos = chunk.add_int(*i);
+                chunk.write_value(pos as u32, 4, ast.pos_marker.line as u32);
+            },
+            ASTType::Str => {
+                chunk.write_code(OpCode::Int, ast.pos_marker.line as u32);
+                let pos = chunk.add_int(ast.pos_marker.slice.len() as i32 - 2);
+                chunk.write_value(pos as u32, 4, ast.pos_marker.line as u32);
+                chunk.write_code(OpCode::Ref, ast.pos_marker.line as u32);
+                let pos = chunk.add_slice(ast.pos_marker.slice[1..ast.pos_marker.slice.len() - 1].as_bytes());
+                chunk.write_value(pos as u32, 4, ast.pos_marker.line as u32);
+            }
+            ASTType::Let(v) => {
+
+            }
+            ASTType::Application(vec) => {
+                match &*vec[0].ttype {
+                    ASTType::OpVariable("+") => {
+                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                        chunk.write_code(OpCode::Add, ast.pos_marker.line as u32);
+                    }
+                    ASTType::OpVariable("-") => {
+                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                        chunk.write_code(OpCode::Sub, ast.pos_marker.line as u32);
+                    }
+                    ASTType::OpVariable("*") => {
+                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                        chunk.write_code(OpCode::Mul, ast.pos_marker.line as u32);
+                    }
+                    ASTType::OpVariable("/") => {
+                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                        chunk.write_code(OpCode::Div, ast.pos_marker.line as u32);
+                    }
+                    ASTType::OpVariable("<") => {
+                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                        chunk.write_code(OpCode::Lt, ast.pos_marker.line as u32);
+                    }
+                    ASTType::Variable("printStr") => {
+                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                        chunk.write_code(OpCode::PrintStr, ast.pos_marker.line as u32);
+                    }
+                    _ => todo!("Unknown function")
+                }
+            },
+            _ => todo!("Dunno how to compile this")
+        }
+        Ok(())
+    }
 }
 
 fn main() -> std::io::Result<()> {
     let mut chunk = Chunk::new();
-    chunk.write_code(OpCode::Int, 101);
-    let pos = chunk.add_int(12);
-    chunk.write_value(pos as u32, 4, 101);
-    chunk.write_code(OpCode::Negate, 101);
-    chunk.write_code(OpCode::Int, 101);
-    let pos = chunk.add_int(15);
-    chunk.write_value(pos as u32, 4, 101);
-    chunk.write_code(OpCode::Add, 101);
 
-    chunk.write_code(OpCode::Return, 101);
-    chunk.disassemble(0);
     let mut vm = VM::new();
-    vm.interpret(chunk);
 
 
     let text = std::fs::read_to_string("./test.ye")?;
     let lines = text.split('\n').collect::<Vec<_>>();
-    let mut scanner = parser::Scanner::new(&text);
+    let scanner = parser::Scanner::new(&text);
+    let mut asts = Vec::new();
+    let mut cmperr = false;
 
-
-    let parser = parser::Parser::new(scanner);
-    for parsed in parser {
+    let mut parser = parser::Parser::new(scanner);
+    loop {
+        let parsed = match parser.next() {
+            Some(x) => x,
+            None => break
+        };
         match parsed {
-            Ok(o) => println!("{}", o),
-            Err(s) => parser::Parser::handle_error(&lines, s)
+            Ok(ast) =>{
+                println!("{}", ast);
+                let desugared = parser::Parser::desugar(ast);
+                asts.extend(desugared)
+            },
+            Err(s) => { parser.handle_error(&lines, s); cmperr = true; }
         }
     }
-    
-    // loop {
-    //     let n = scanner.next();
-    //     println!("{:?} peek: {:?}", n, scanner.peek());
-    //     if n.is_none() {
-    //         break;
-    //     }
-    // }
+
+    if cmperr {
+        return Ok(());
+    }
+
+    for i in asts {
+        match vm.compile(&mut chunk, &i) {
+            Ok(_) => (),
+            Err(e) => println!("Compile error: {}", e)
+        }
+    }
+
+    chunk.write_code(OpCode::Return, 12);
+
+    chunk.disassemble(0);
+
+    match vm.interpret(chunk) {
+        Ok(_) => (),
+        Err(RuntimeError::StdoutWriteErr(err)) => println!("RUNTIME ERROR:\nA standart output write error occured!: {}", err)
+    }
 
     Ok(())
 }
