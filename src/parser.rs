@@ -414,7 +414,7 @@ pub enum ASTType<'a> {
     Char(char),
     Variable(&'a str),
     OpVariable(&'a str),
-    Str,
+    Str(&'a str),
     InfixOp(&'a str, Vec<AST<'a>>),
     InfixSndOp(&'a str, AST<'a>),
     PrefixOp(&'a str, AST<'a>),
@@ -446,7 +446,7 @@ impl<'a> std::fmt::Display for ASTType<'a> {
         match self {
             ASTType::Integer(i) => write!(f, "Integer {}", i),
             ASTType::Floating => write!(f, "Floating"),
-            ASTType::Str => write!(f, "String"),
+            ASTType::Str(s) => write!(f, "String {:?}", s),
             ASTType::Char(c) => write!(f, "Char {:?}", c),
             ASTType::Bool => write!(f, "Bool"),
             ASTType::InfixOp(op, ops) => {
@@ -1087,7 +1087,7 @@ impl<'a> Parser<'a> {
                     token)),
             Token { type_: TokenType::Floating, .. } => Ok(Parser::make_atom(ASTType::Floating, token)),
             Token { type_: TokenType::Char, .. } => Ok(Parser::make_atom(ASTType::Char(token.slice.chars().collect::<Vec<_>>()[1]), token)),
-            Token { type_: TokenType::Str, .. } => Ok(Parser::make_atom(ASTType::Str, token)),
+            Token { type_: TokenType::Str, .. } => Ok(Parser::make_atom(ASTType::Str(&token.slice[1..token.slice.len() - 1]), token)),
             Token { type_: TokenType::Variable, .. } => Ok(Parser::make_atom(ASTType::Variable(token.slice), token)),
             _ => Err(self.err("expected other token while atomizing", token))
         }

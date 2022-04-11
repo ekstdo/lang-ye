@@ -210,64 +210,70 @@ impl VM {
             self.ip += 1;
         }
     }
-
-    fn compile<'a>(&self, chunk: &mut Chunk, ast: &AST<'a>) -> Result<(), &'static str> {
-        match &*ast.ttype {
-            ASTType::Integer(i) => {
-                chunk.write_code(OpCode::Int, ast.pos_marker.line as u32);
-                let pos = chunk.add_int(*i);
-                chunk.write_value(pos as u32, 4, ast.pos_marker.line as u32);
-            },
-            ASTType::Str => {
-                chunk.write_code(OpCode::Int, ast.pos_marker.line as u32);
-                let pos = chunk.add_int(ast.pos_marker.slice.len() as i32 - 2);
-                chunk.write_value(pos as u32, 4, ast.pos_marker.line as u32);
-                chunk.write_code(OpCode::Ref, ast.pos_marker.line as u32);
-                let pos = chunk.add_slice(ast.pos_marker.slice[1..ast.pos_marker.slice.len() - 1].as_bytes());
-                chunk.write_value(pos as u32, 4, ast.pos_marker.line as u32);
-            }
-            ASTType::Let(v) => {
-
-            }
-            ASTType::Application(vec) => {
-                match &*vec[0].ttype {
-                    ASTType::OpVariable("+") => {
-                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
-                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
-                        chunk.write_code(OpCode::Add, ast.pos_marker.line as u32);
-                    }
-                    ASTType::OpVariable("-") => {
-                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
-                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
-                        chunk.write_code(OpCode::Sub, ast.pos_marker.line as u32);
-                    }
-                    ASTType::OpVariable("*") => {
-                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
-                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
-                        chunk.write_code(OpCode::Mul, ast.pos_marker.line as u32);
-                    }
-                    ASTType::OpVariable("/") => {
-                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
-                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
-                        chunk.write_code(OpCode::Div, ast.pos_marker.line as u32);
-                    }
-                    ASTType::OpVariable("<") => {
-                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
-                        self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
-                        chunk.write_code(OpCode::Lt, ast.pos_marker.line as u32);
-                    }
-                    ASTType::Variable("printStr") => {
-                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
-                        chunk.write_code(OpCode::PrintStr, ast.pos_marker.line as u32);
-                    }
-                    _ => todo!("Unknown function")
-                }
-            },
-            _ => todo!("Dunno how to compile this")
-        }
-        Ok(())
-    }
 }
+
+fn compile<'a>(chunk: &mut Chunk, ast: &AST<'a>) -> Result<(), &'static str> {
+    match &*ast.ttype {
+        ASTType::Integer(i) => {
+            chunk.write_code(OpCode::Int, ast.pos_marker.line as u32);
+            let pos = chunk.add_int(*i);
+            chunk.write_value(pos as u32, 4, ast.pos_marker.line as u32);
+        },
+        ASTType::Str(s) => {
+            chunk.write_code(OpCode::Int, ast.pos_marker.line as u32);
+            let pos = chunk.add_int(s.len() as i32);
+            chunk.write_value(pos as u32, 4, ast.pos_marker.line as u32);
+            chunk.write_code(OpCode::Ref, ast.pos_marker.line as u32);
+            let pos = chunk.add_slice(s.as_bytes());
+            chunk.write_value(pos as u32, 4, ast.pos_marker.line as u32);
+        }
+        ASTType::Let(v) => {
+            for (var, val, static_, mut_) in v {
+                match *var.ttype {
+                    ASTType::Variable(v) => {chunk.globals.insert(v.to_string(), 0);},
+                    _ => todo!("dunno how to handle variables yet, lol")
+                }
+            }
+        }
+        ASTType::Application(vec) => {
+            match &*vec[0].ttype {
+                ASTType::OpVariable("+") => {
+                    compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                    compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                    chunk.write_code(OpCode::Add, ast.pos_marker.line as u32);
+                }
+                ASTType::OpVariable("-") => {
+                    compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                    compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                    chunk.write_code(OpCode::Sub, ast.pos_marker.line as u32);
+                }
+                ASTType::OpVariable("*") => {
+                    compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                    compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                    chunk.write_code(OpCode::Mul, ast.pos_marker.line as u32);
+                }
+                ASTType::OpVariable("/") => {
+                    compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                    compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                    chunk.write_code(OpCode::Div, ast.pos_marker.line as u32);
+                }
+                ASTType::OpVariable("<") => {
+                    compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                    compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
+                    chunk.write_code(OpCode::Lt, ast.pos_marker.line as u32);
+                }
+                ASTType::Variable("printStr") => {
+                    compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                    chunk.write_code(OpCode::PrintStr, ast.pos_marker.line as u32);
+                }
+                _ => todo!("Unknown function")
+            }
+        },
+        _ => todo!("Dunno how to compile this")
+    }
+    Ok(())
+}
+
 
 fn main() -> std::io::Result<()> {
     let mut chunk = Chunk::new();
@@ -302,7 +308,7 @@ fn main() -> std::io::Result<()> {
     }
 
     for i in asts {
-        match vm.compile(&mut chunk, &i) {
+        match compile(&mut chunk, &i) {
             Ok(_) => (),
             Err(e) => println!("Compile error: {}", e)
         }
