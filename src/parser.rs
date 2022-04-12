@@ -1101,17 +1101,23 @@ impl<'a> Parser<'a> {
         self.scanner.peek().ok_or(self.err(msg, at.clone()))?.map_err(ParseErr::LexErr)
     }
 
-    pub fn desugar(ast: AST<'a>) -> Vec<AST<'a>> {
+    pub fn desugar(ast: AST<'a>) -> AST<'a> {
         let AST { pos_marker, ttype } = ast;
         match *ttype {
             ASTType::For(InnerForLoop::In(var, iter), block, els) => unimplemented!(),
             ASTType::InfixOp(op, mut vec) => {
                 let opvar = AST { pos_marker: pos_marker.clone(), ttype: Box::new(ASTType::OpVariable(op)) };
-                vec = vec.into_iter().map(|x| Parser::desugar(x)).flatten().collect();
+                vec = vec.into_iter().map(|x| Parser::desugar(x)).collect();
                 vec.insert(0, opvar);
-                vec![AST {pos_marker, ttype: Box::new(ASTType::Application(vec))}]
+                AST {pos_marker, ttype: Box::new(ASTType::Application(vec))}
             }
-            x => vec![AST {pos_marker, ttype: Box::new(x)}]
+            ASTType::Let(v) => 
+                AST {pos_marker, ttype: Box::new(ASTType::Let(
+                            v.into_iter().map( |(x, v, s, m)|
+                                (x, v.map(Parser::desugar), s, m)
+                            ).collect()
+                        ))},
+            x => AST {pos_marker, ttype: Box::new(x)}
         }
     }
 }
