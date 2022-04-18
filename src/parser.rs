@@ -404,8 +404,13 @@ impl<'a> std::fmt::Display for InnerForLoop<'a> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Copy)]
+pub enum OperatorType {
+    Infix, Prefix, Postfix
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub enum ASTType<'a> {
+pub enum ASTType<'a, T> {
     Unit,
     Empty,
     Integer(i32),
@@ -413,25 +418,26 @@ pub enum ASTType<'a> {
     Bool,
     Char(char),
     Variable(&'a str),
-    OpVariable(&'a str),
+    Generated(String),
+    OpVariable(&'a str, OperatorType),
     Str(&'a str),
-    InfixOp(&'a str, Vec<AST<'a>>),
-    InfixSndOp(&'a str, AST<'a>),
-    PrefixOp(&'a str, AST<'a>),
-    PostfixOp(&'a str, AST<'a>),
-    Application(Vec<AST<'a>>),
-    Let(Vec<(AST<'a>, Option<AST<'a>>, bool, bool)>), // static, mut
-    List(Vec<AST<'a>>),
-    Lambda(Vec<AST<'a>>, AST<'a>),
-    While(AST<'a>, AST<'a>),
-    If(AST<'a>, AST<'a>, Option<AST<'a>>, bool), // has ending else
-    For(InnerForLoop<'a>, AST<'a>, Option<AST<'a>>),
-    Match(Vec<(AST<'a>, AST<'a>)>),
-    Block(Vec<AST<'a>>),
-    TagStatement(&'a str, Vec<AST<'a>>),
+    InfixOp(&'a str, Vec<T>),
+    InfixSndOp(&'a str, T),
+    PrefixOp(&'a str, T),
+    PostfixOp(&'a str, T),
+    Application(Vec<T>),
+    Let(Vec<(T, Option<T>, bool, bool)>), // static, mut
+    List(Vec<T>),
+    Lambda(Vec<T>, T),
+    While(T, T),
+    If(T, T, Option<T>, bool), // has ending else
+    For(InnerForLoop<'a>, T, Option<T>),
+    Match(Vec<(T, T)>),
+    Block(Vec<T>),
+    TagStatement(&'a str, Vec<T>),
 }
 
-impl<'a> ASTType<'a> {
+impl<'a, T> ASTType<'a, T> {
     fn needs_semicolon(&self) -> bool {
         match self {
             ASTType::While(_, _) | ASTType::For(_, _, _) | ASTType::Block(_) => false,
@@ -441,7 +447,7 @@ impl<'a> ASTType<'a> {
     }
 }
 
-impl<'a> std::fmt::Display for ASTType<'a> {
+impl<'a> std::fmt::Display for ASTType<'a, AST<'a>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ASTType::Integer(i) => write!(f, "Integer {}", i),
@@ -548,12 +554,12 @@ impl<'a> std::fmt::Display for ASTType<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AST<'a> {
     pub pos_marker: Token<'a>,
-    pub ttype: Box<ASTType<'a>>
+    pub asttype: Box<ASTType<'a, AST<'a>>>
 }
 
 impl<'a> std::fmt::Display for AST<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.ttype.fmt(f)
+        self.asttype.fmt(f)
     }
 }
 
@@ -636,8 +642,8 @@ impl<'a> Parser<'a> {
         Parser {infix_op , prefix_op, postfix_op, scanner}
     }
 
-    fn make_atom(atype: ASTType<'a>, token: Token<'a>) -> AST<'a> {
-        AST { pos_marker: token, ttype: Box::new(atype)}
+    fn make_atom(atype: ASTType<'a, AST<'a>>, token: Token<'a>) -> AST<'a> {
+        AST { pos_marker: token, asttype: Box::new(atype)}
     }
 
     pub fn handle_error(&mut self, lines: &Vec<&'a str>, err: ParseErr){
@@ -719,7 +725,7 @@ impl<'a> Parser<'a> {
             _ => self.parse_expr(0, Environment::Nothing)
         }?;
         if expect_semicolon {
-            let needs_semicolon = res.ttype.needs_semicolon();
+            let needs_semicolon = res.asttype.needs_semicolon();
             if needs_semicolon {
                 self.expect(TokenType::Semicolon)?;
             } else {
@@ -755,7 +761,7 @@ impl<'a> Parser<'a> {
             } else if expr {
                 let mut el = self.parse_expr(6, env)?;
                 let mut help_vec = Vec::new();
-                while let AST { ttype: box ASTType::InfixOp("=", v), .. } = el {
+                while let AST { asttype: box ASTType::InfixOp("=", v), .. } = el {
                     let v = v.clone();
                     help_vec.push(v[0].clone());
                     el = v[1].clone();
@@ -788,7 +794,7 @@ impl<'a> Parser<'a> {
             if self.prefix_op.contains_key(tok.slice) {
                 if tok2.type_== TokenType::ParenRight {
                     self.expect(TokenType::ParenRight)?;
-                    Ok(Parser::make_atom(ASTType::OpVariable(tok.slice), tok))
+                    Ok(Parser::make_atom(ASTType::OpVariable(tok.slice, OperatorType::Infix), tok))
                 } else {
                     self.scanner.cache.push(tok);
                     let mut res = self.parse_expr(0, Environment::InParen);
@@ -856,7 +862,7 @@ impl<'a> Parser<'a> {
         } else {
             let cond = self.parse_expr(7, Environment::InCondition)?;
 
-            match &*cond.ttype {
+            match &*cond.asttype {
                 ASTType::InfixOp("in", v) => InnerForLoop::In(v[0].clone(), v[1].clone()),
                 _ => return Err(self.err("You either need \"(init, cond, step)\" or \"iden in iter\"", at))
             }
@@ -920,7 +926,7 @@ impl<'a> Parser<'a> {
             Some(if tok.type_ == TokenType::If {
                 self.scanner.next();
                 let res = self.parse_if(tok)?;
-                match *res.ttype {
+                match *res.asttype {
                     ASTType::If(_, _, _, b) => ending_else = b,
                     _ => ()
                 }
@@ -949,7 +955,7 @@ impl<'a> Parser<'a> {
                 let res = self.parse_expr(0, Environment::Nothing);
                 self.expect(TokenType::BrackRight)?;
                 match res {
-                    Ok(AST { ttype: box ASTType::InfixOp(",", vec), ..}) => Ok(Parser::make_atom(ASTType::List(vec), tok)),
+                    Ok(AST { asttype: box ASTType::InfixOp(",", vec), ..}) => Ok(Parser::make_atom(ASTType::List(vec), tok)),
                     Ok(inner) => Ok(Parser::make_atom(ASTType::List(vec![inner]), tok)),
                     Err(_) => res
                 }
@@ -969,7 +975,7 @@ impl<'a> Parser<'a> {
                 let rhs = self.parse_expr(8, Environment::Nothing)?;
                 let mut vars = Vec::new();
 
-                if let ASTType::Application(varlist) = *lhs.ttype {
+                if let ASTType::Application(varlist) = *lhs.asttype {
                     vars = varlist;
                 } else {
                     vars.push(lhs);
@@ -981,7 +987,7 @@ impl<'a> Parser<'a> {
             Token { type_ : TokenType::While, .. } => return self.parse_while(next_token),
             Token { type_ : TokenType::If, .. } => {
                 let res = self.parse_if(next_token)?;
-                match *res.ttype {
+                match *res.asttype {
                     ASTType::If(_, _, _, false) => return Ok(res),
                     _ => {}
                 }
@@ -1016,7 +1022,7 @@ impl<'a> Parser<'a> {
 
                 let rhs = self.parse_expr(APPLICATION_LEVEL + 1, env)?;
 
-                match &mut *lhs.ttype {
+                match &mut *lhs.asttype {
                     ASTType::Application(ap) => ap.push(rhs),
                     _ => lhs = Parser::make_atom(ASTType::Application(vec![lhs, rhs]), op)
                 }
@@ -1066,7 +1072,7 @@ impl<'a> Parser<'a> {
             let rhs = self.parse_expr(rp, env)?;
 
             // make comma seperated stuff to a list instead of nested AST
-            if let AST { ttype: box ASTType::InfixOp(",", vec), pos_marker } = &mut lhs {
+            if let AST { asttype: box ASTType::InfixOp(",", vec), pos_marker } = &mut lhs {
                 if pos_marker.type_.is_lparen() {
                     lhs = Parser::make_atom(ASTType::InfixOp(op_str, vec![lhs, rhs]), op);
                 } else {
@@ -1100,26 +1106,6 @@ impl<'a> Parser<'a> {
     fn peek_token_or(&mut self, msg: &'static str, at: &Token<'a>) -> Result<Token<'a>, ParseErr<'a>> {
         self.scanner.peek().ok_or(self.err(msg, at.clone()))?.map_err(ParseErr::LexErr)
     }
-
-    pub fn desugar(ast: AST<'a>) -> AST<'a> {
-        let AST { pos_marker, ttype } = ast;
-        match *ttype {
-            ASTType::For(InnerForLoop::In(var, iter), block, els) => unimplemented!(),
-            ASTType::InfixOp(op, mut vec) => {
-                let opvar = AST { pos_marker: pos_marker.clone(), ttype: Box::new(ASTType::OpVariable(op)) };
-                vec = vec.into_iter().map(|x| Parser::desugar(x)).collect();
-                vec.insert(0, opvar);
-                AST {pos_marker, ttype: Box::new(ASTType::Application(vec))}
-            }
-            ASTType::Let(v) => 
-                AST {pos_marker, ttype: Box::new(ASTType::Let(
-                            v.into_iter().map( |(x, v, s, m)|
-                                (x, v.map(Parser::desugar), s, m)
-                            ).collect()
-                        ))},
-            x => AST {pos_marker, ttype: Box::new(x)}
-        }
-    }
 }
 
 impl<'a> Iterator for Parser<'a> {
@@ -1134,6 +1120,50 @@ impl<'a> Iterator for Parser<'a> {
     }
 }
 
+pub struct Desugarer {
+    counter: usize
+}
+
+impl Desugarer {
+    pub fn new() -> Self {
+        Desugarer { counter: 0 }
+    }
+
+    pub fn desugar<'a>(&mut self, ast: AST<'a>) -> AST<'a> {
+        let AST { pos_marker, asttype: ttype } = ast;
+        match *ttype {
+            ASTType::For(InnerForLoop::In(var, iter), block, els) => unimplemented!(),
+            ASTType::InfixOp(op, mut vec) => {
+                let opvar = AST { pos_marker: pos_marker.clone(), asttype: Box::new(ASTType::OpVariable(op, OperatorType::Infix)) };
+                vec = vec.into_iter().map(|x| self.desugar(x)).collect();
+                vec.insert(0, opvar);
+                AST {pos_marker, asttype: Box::new(ASTType::Application(vec))}
+            }
+            ASTType::InfixSndOp(op, operand)  => {
+                let temp_var = AST {pos_marker: pos_marker.clone(), asttype: Box::new(ASTType::Generated( { self.counter += 1; format!("a{}", self.counter) } ))};
+                AST {pos_marker: pos_marker.clone(), asttype: Box::new(ASTType::Lambda(vec![
+                    temp_var.clone()
+                ], AST {pos_marker: pos_marker.clone(), asttype: Box::new(ASTType::Application(vec![
+                    AST {pos_marker: pos_marker.clone(), asttype: Box::new(ASTType::OpVariable(pos_marker.slice, OperatorType::Infix))},
+                    temp_var,
+                    operand
+                ])) }))}
+            }
+            ASTType::Application(v) => {
+                AST {pos_marker, asttype: Box::new(ASTType::Application(v.into_iter().map(|x| self.desugar(x)).collect()))}
+            }
+            ASTType::Let(v) => 
+                AST {pos_marker, asttype: Box::new(ASTType::Let(
+                            v.into_iter().map( |(x, v, s, m)|
+                                (x, v.map(|x| self.desugar(x)), s, m)
+                            ).collect()
+                        ))},
+            x => AST {pos_marker, asttype: Box::new(x)}
+        }
+    }
+
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1141,7 +1171,7 @@ mod test {
     fn assert_parsed(text: &'static str, to_match: &'static str){
         let text = String::from(text);
         let mut parser = Parser::new(Scanner::new(&text));
-        assert_eq!(format!("{}", parser.next().unwrap().unwrap().ttype), String::from(to_match))
+        assert_eq!(format!("{}", parser.next().unwrap().unwrap().asttype), String::from(to_match))
     }
 
     #[test]
@@ -1161,8 +1191,8 @@ mod test {
         let scanner = Scanner::new(&text);
         let mut parser = Parser::new(scanner);
 
-        assert_eq!(*parser.next().unwrap().unwrap().ttype, ASTType::Unit);
-        assert_eq!(format!("{}", parser.next().unwrap().unwrap().ttype), String::from("('<<>>': Variable(\"a\"), Variable(\"b\"))"))
+        assert_eq!(*parser.next().unwrap().unwrap().asttype, ASTType::Unit);
+        assert_eq!(format!("{}", parser.next().unwrap().unwrap().asttype), String::from("('<<>>': Variable(\"a\"), Variable(\"b\"))"))
     }
 
     #[test]

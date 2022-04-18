@@ -1,5 +1,11 @@
 printStr "hi";
 printStr ("yo");
+
 let a = 5;
 let b = 10 + a;
-a + b;
+
+(*a) b;
+
+for (let i = 0; i < 10; i += 1) {
+	a();
+}

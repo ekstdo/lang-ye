@@ -1,9 +1,10 @@
 #![feature(char_indices_offset)]
 #![feature(box_patterns)]
 
-use parser::{AST, ASTType};
+use parser::{AST, ASTType, OperatorType};
 
 mod parser;
+mod typing;
 
 use std::{str, io::Write};
 
@@ -186,7 +187,7 @@ impl VM {
                 let value = (&self.stack[index..index + 4]).to_owned();
                 self.stack.extend_from_slice(&value);
                 self.ip += 4;
-            }else if instruction == OpCode::Negate as u8 {
+            } else if instruction == OpCode::Negate as u8 {
                 let val = self.pop_int();
                 self.push_int(-val);
             } else if instruction == OpCode::Add as u8 {
@@ -234,7 +235,7 @@ impl Compiler {
     }
 
     fn compile<'a>(&mut self, chunk: &mut Chunk, ast: &AST<'a>) -> Result<(), &'static str> {
-        match &*ast.ttype {
+        match &*ast.asttype {
             ASTType::Integer(i) => {
                 chunk.write_code(OpCode::Int, ast.pos_marker.line as u32);
                 let pos = chunk.add_int(*i);
@@ -262,7 +263,7 @@ impl Compiler {
             }
             ASTType::Let(v) => {
                 for (var, val, static_, mut_) in v {
-                    match *var.ttype {
+                    match *var.asttype {
                         ASTType::Variable(v) => {
                             self.globals.insert(v.to_string(), self.next_global_pos);
                             println!("Globals: {:?}", self.globals);
@@ -276,32 +277,36 @@ impl Compiler {
                 }
             }
             ASTType::Application(vec) => {
-                match &*vec[0].ttype {
-                    ASTType::OpVariable("+") => {
+                match &*vec[0].asttype {
+                    ASTType::OpVariable("+", OperatorType::Infix) => {
                         self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
                         self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
                         chunk.write_code(OpCode::Add, ast.pos_marker.line as u32);
                         self.next_global_pos -= 4;
                     }
-                    ASTType::OpVariable("-") => {
+                    ASTType::OpVariable("-", OperatorType::Infix) => {
                         self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
                         self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
                         chunk.write_code(OpCode::Sub, ast.pos_marker.line as u32);
                         self.next_global_pos -= 4;
                     }
-                    ASTType::OpVariable("*") => {
+                    ASTType::OpVariable("-", OperatorType::Prefix) => {
+                        self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
+                        chunk.write_code(OpCode::Negate, ast.pos_marker.line as u32);
+                    }
+                    ASTType::OpVariable("*", OperatorType::Infix) => {
                         self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
                         self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
                         chunk.write_code(OpCode::Mul, ast.pos_marker.line as u32);
                         self.next_global_pos -= 4;
                     }
-                    ASTType::OpVariable("/") => {
+                    ASTType::OpVariable("/", OperatorType::Infix) => {
                         self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
                         self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
                         chunk.write_code(OpCode::Div, ast.pos_marker.line as u32);
                         self.next_global_pos -= 4;
                     }
-                    ASTType::OpVariable("<") => {
+                    ASTType::OpVariable("<", OperatorType::Infix) => {
                         self.compile(chunk, vec.get(1).ok_or("Expected argument 1")?)?;
                         self.compile(chunk, vec.get(2).ok_or("Expected argument 2")?)?;
                         chunk.write_code(OpCode::Lt, ast.pos_marker.line as u32);
@@ -333,6 +338,7 @@ fn main() -> std::io::Result<()> {
     let text = std::fs::read_to_string("./test.ye")?;
     let lines = text.split('\n').collect::<Vec<_>>();
     let scanner = parser::Scanner::new(&text);
+    let mut desugarer = parser::Desugarer::new();
     let mut asts = Vec::new();
     let mut cmperr = false;
 
@@ -345,7 +351,7 @@ fn main() -> std::io::Result<()> {
         match parsed {
             Ok(ast) =>{
                 println!("{}", ast);
-                let desugared = parser::Parser::desugar(ast);
+                let desugared = desugarer.desugar(ast);
                 println!("desugared: {}", desugared);
                 asts.push(desugared)
             },
