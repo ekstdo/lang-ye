@@ -6,6 +6,8 @@ let b = 10 + a;
 
 (*a) b;
 
-for (let i = 0; i < 10; i += 1) {
+for (let i = 0; i < 10; i = i + 1) {
 	a();
 }
+
+let f b x = x + 5;
