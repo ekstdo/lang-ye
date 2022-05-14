@@ -208,6 +208,7 @@ impl<'a> Typer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::Parser;
 
     #[test]
     fn test_replace() {
@@ -227,11 +228,14 @@ mod tests {
 
     #[test]
     fn typing(){
+
+        let to_type = "f 1;";
+
         let mut typer = Typer::new();
         let scope = HashMap::from([("f", Type::Application("->", vec![Type::Single("I32"), Type::Single("I32")]))]);
         typer.typed_vars.push(scope);
         
-        typer.type_ast(todo!());
+        typer.type_ast(Parser::from_string(&to_type.to_string()).next().unwrap().unwrap());
     }
 
     #[test]
