@@ -49,23 +49,23 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
-    let mut compiler = Compiler::new();
+//     let mut compiler = Compiler::new();
 
-    for i in asts {
-        match compiler.compile(&mut chunk, &i) {
-            Ok(_) => (),
-            Err(e) => println!("Compile error: {}", e)
-        }
-    }
+//     for i in asts {
+//         match compiler.compile(&mut chunk, &i) {
+//             Ok(_) => (),
+//             Err(e) => println!("Compile error: {}", e)
+//         }
+//     }
 
-    chunk.write_code(OpCode::Return, 12);
+//     chunk.write_code(OpCode::Return, 12);
 
-    chunk.disassemble(0);
+//     chunk.disassemble(0);
 
-    match vm.interpret(chunk) {
-        Ok(_) => (),
-        Err(RuntimeError::StdoutWriteErr(err)) => println!("RUNTIME ERROR:\nA standart output write error occured!: {}", err)
-    }
+//     match vm.interpret(chunk) {
+//         Ok(_) => (),
+//         Err(RuntimeError::StdoutWriteErr(err)) => println!("RUNTIME ERROR:\nA standart output write error occured!: {}", err)
+//     }
 
     Ok(())
 }

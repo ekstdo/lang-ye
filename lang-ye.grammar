@@ -1,0 +1,79 @@
+
+
+<stmt> := <for>
+        | <nonReturningIf>
+        | <while>
+        | <lexpr(STMT_LEVEL)> ';'
+        | <let>
+        | <nonReturningBlock>
+
+
+
+<lexpr(n)> := <lexpr(n)> <lop(n)> <rexpr(n)>
+            | <rexpr(n)>
+
+<rexpr(n)> := <lexpr(n - 1)> <rop(n)> <rexpr(n)>
+            | <lexpr(n - 1)>
+
+<lexpr(APPLICATION_LEVEL)> := <lit>
+
+<lit> := int
+       | float
+       | char
+       | string
+       | '(' <lexpr(MAX_LEVEL)> ')'
+       | '(' <rexpr(n)> <lop(n)> ')'
+       | '(' <lop(n)> ')'
+       | '(' <lop(n)> <rexpr(n)> ')'
+       | '(' <rop(n)> <lexpr(n-1) ')'
+       | '(' <lexpr(n-1)> <rop(n)> <lexpr(n-1)> ')'
+       | '(' <lexpr(n-1)> <rop(n)> ')'
+       | '(' <rop(n)> ')'
+       | '(' ')'
+       | '(' <innerList> ')'
+       | '[' <innerList> ']'
+       | '[' <innerMatch> ']'
+       | <returningBlock>
+       | <returningIf>
+       | '{' <innerMatch> '}'
+
+<innerList> := <innerList> ',' <lexpr(MAX_LEVEL)>
+             | <lexpr(MAX_LEVEL)>
+
+<innerMatch> := <innerMatch> ',' <lexpr(MAX_LEVEL)> '=>' <lexpr(MAX_LEVEL)>
+              | <lexpr(MAX_LEVEL)> '=>' <lexpr(MAX_LEVEL)>
+
+<block> := <returningBlock>
+         | <nonReturningBlock>
+
+<returningIf> := if <returningBlock> else <returningIf>
+               | <returningBlock>
+
+<nonReturningIf> := if <nonReturningBlock> else <if>
+
+<if> := if <block>
+      | if <block> else <if>
+
+<for> := for <oldFor> <nonReturningBlock> 
+       | for <inFor> <nonReturningBlock>
+       | for <oldFor> <nonReturningBlock> else <nonReturningBlock>
+       | for <inFor> <nonReturningBlock> else <nonReturningBlock>
+
+<oldFor> := '(' <lexpr(STMT_LEVEL)> ';' <lexpr(STMT_LEVEL)> ';' <lexpr(STMT_LEVEL)> ')'
+          | '(' <lexpr(STMT_LEVEL)> ';' ';' <lexpr(STMT_LEVEL)> ')'
+          | '(' <lexpr(STMT_LEVEL)> ';' <lexpr(STMT_LEVEL)> ';'')'
+          | '(' <lexpr(STMT_LEVEL)> ';' ';' ')'
+          | '(' ';' <lexpr(STMT_LEVEL)> ';' ')'
+          | '(' ';' <lexpr(STMT_LEVEL)> ';' <lexpr(STMT_LEVEL)> ')'
+          | '(' ';' ';' <lexpr(STMT_LEVEL)> ')'
+
+<inFor> := <lexpr(IN_LEVEL)> in <lexpr(IN_LEVEL)>
+
+<returningBlock> := '{' <innerBlock> ';' <lexpr(STMT_LEVEL)> '}'
+
+<nonReturningBlock> := '{' <innerBlock> '}'
+
+<innerBlock> := <innerBlock> <stmt>
+              | <stmt>
+
+<while> := while <lexpr(STMT_LEVEL)> <nonReturningBlock>

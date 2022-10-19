@@ -39,7 +39,7 @@ impl Compiler {
                 self.next_global_pos += 4;
             }
             ASTType::Let(v) => {
-                for (var, val, static_, mut_) in v {
+                for (var, val) in v {
                     match *var.asttype {
                         ASTType::Variable(v) => {
                             self.globals.insert(v.to_string(), self.next_global_pos);

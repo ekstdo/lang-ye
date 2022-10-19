@@ -1,13 +1,7 @@
-printStr "hi";
-printStr ("yo");
+[
+	"x" => 1
+];
 
-let a = 5;
-let b = 10 + a;
-
-(*a) b;
-
-for (let i = 0; i < 10; i = i + 1) {
-	a();
-}
-
-let f b x = x + 5;
+{
+	x => 1;
+};
