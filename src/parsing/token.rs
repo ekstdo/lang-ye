@@ -1,54 +1,19 @@
 
+pub type Spanned<Tok, Loc, Error> = Result<(Loc, Tok, Loc), Error>;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TokenType {
+pub enum Token<'input> {
     ParenLeft, ParenRight, // ()
     BrackLeft, BrackRight, // []
     CurlyLeft, CurlyRight, // {}
 
-    Integer, Floating, Char, Str,
+    Integer(&'input str), Floating(&'input str), Char(char), String(&'input str),
 
-    Operator, Assign, Reassign, Semicolon, Variable, Hyphen, // +, ;, a, `
-    Lambda,
+    Operator(&'input str), Assign, Reassign(&'input str), Semicolon, Variable(&'input str), Hyphen, // +, ;, a, `
+    Lambda, Comma, To, Matches,
 
     If, Else, While, Let, For, Raw, Mut, Is, Return, Continue, Break,
-    Ref, In, Static, Export, Import, Lazy, Async,
+    Ref, In, Static, Export, Import, Lazy, Async, Await,
 
-    Tag
+    Tag(&'input str), Goto, Here
 }
-
-#[derive(Debug, Clone,PartialEq)]
-pub struct Token<'a> {
-    pub type_: TokenType,
-    pub line: usize,
-    pub position: usize,
-    pub slice: &'a str
-}
-
-impl TokenType {
-    pub fn is_atom(&self) -> bool {
-        use TokenType::*;
-        match self {
-            Integer | Floating | Char | Str | Variable => true,
-            _ => false 
-        }
-    }
-
-    pub fn is_lparen(&self) -> bool {
-        use TokenType::*;
-        match self {
-            ParenLeft | BrackLeft | CurlyLeft => true,
-            _ => false 
-        }
-    }
-
-    pub fn is_rparen(&self) -> bool {
-        use TokenType::*;
-        match self {
-            ParenRight | BrackRight | CurlyRight => true,
-            _ => false 
-        }
-    }
-
-}
-
-

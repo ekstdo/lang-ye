@@ -1,0 +1,55 @@
+use std::str::FromStr;
+
+grammar;
+
+pub Stmt: Stmt  = {
+  ForStmt,
+  WhileStmt,
+  LetStmt,
+  <expr: LexprSTMT_LEVEL> => Stmt::Expr(expr),
+  Goto <v:var> ";" => Stmt::Goto(v),
+  Here <v:var> ";" => Stmt::Here(v),
+  NonReturningIf
+}
+
+pub LetStmt: Stmt = {
+  Let <l: LetList> ";" => Stmt::Let(l)
+}
+
+LetList : Vec<Expr> = {
+  <mut l: LetList> "," <e: RexprASSIGN_LEVEL> => { l.push(e); l },
+  <e: RexprASSIGN_LEVEL> => vec![e]
+}
+
+VarMod : VarMod = {
+  Var => VarMod::Var(<>, false, false),
+  Mut <v: Var> => VarMod::Var(v, true, false),
+  Static <v: Var> => VarMod::Var(v, false, true),
+  Static Mut <v: Var> => VarMod::Var(v, true, true)
+}
+
+LTier<Op,NextTier>: Box<Expr> = {
+  <l: Tier<Op,NextTier>> <o: Op> <r: NextTier> => Box::new(Expr::Op(o, l, r)),
+  NextTier
+};
+
+RTier<Op,NextTier>: Box<Expr> = {
+  <l: NextTier> <o: Op> <r: Tier<Op,NextTier>> => Box::new(Expr::Op(o, l, r)),
+  NextTier
+};
+
+
+LexprMAX_LEVEL = LTier<lopMAX_LEVEL, RexprMAX_LEVEL>;
+RexprMAX_LEVEL = RTier<ropMAX_LEVEL, LexprASSIGN_LEVEL>;
+
+LexprASSIGN_LEVEL = LTier<lopASSIGN_LEVEL, RexprASSIGN_LEVEL>;
+RexprASSIGN_LEVEL = RTier<ropASSIGN_LEVEL, LexprASSIGN1_LEVEL>; // =
+
+LexprASSIGN1_LEVEL = LTier<lopASSIGN1_LEVEL, RexprASSIGN1_LEVEL>;
+RexprASSIGN1_LEVEL = RTier<ropASSIGN1_LEVEL, LexprASSIGN2_LEVEL>; // |
+
+LexprASSIGN2_LEVEL = LTier<lopASSIGN2_LEVEL, RexprASSIGN2_LEVEL>;
+RexprASSIGN2_LEVEL = RTier<ropASSIGN2_LEVEL, LexprIN_LEVEL>; // <-
+
+LexprIN_LEVEL = LTier<lopIN_LEVEL, RexprIN_LEVEL>;
+RexprIN_LEVEL = RTier<ropIN_LEVEL, LexprIN1_LEVEL>; 

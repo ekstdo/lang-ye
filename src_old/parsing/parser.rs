@@ -237,13 +237,13 @@ enum Environment {
 impl<'a> Parser<'a> {
     pub fn new(scanner: Scanner<'a>) -> Parser<'a> {
         let infix_op = HashMap::from([
-            (String::from(","), (5, 6)),    
-            (String::from("=>"), (7, 8)),
-            (String::from("="), (8, 7)),
+            // (String::from(","), (5, 6)), // gone    
+            // (String::from("=>"), (7, 8)), // gone 
+            // (String::from("="), (8, 7)),
             (String::from("|"), (10, 9)),
             (String::from("<-"), (11, 12)),   // backpassing
 
-            (String::from("in"), (15, 9)),
+            // (String::from("in"), (15, 9)),
 
             (String::from("<|"), (10, 9)),   // low prec operator
             (String::from("<||"), (10, 9)),  // uncurry

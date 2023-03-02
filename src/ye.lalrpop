@@ -1,0 +1,179 @@
+use std::str::FromStr;
+
+grammar<'input>(input: &'input str);
+
+use crate::parsing::token::{Token, Spanned};
+use crate::parsing::preprocessor::PreprocessorError;
+use crate::parsing::ast::{ExprAST, StmtAST, ForAST};
+use crate::parsing::util::{parse_int, parse_float, appl};
+use num_bigint::BigInt;
+
+extern {
+    type Location = usize;
+    type Error = PreprocessorError;
+
+    enum Token<'input> {
+		"int" => Token::Integer(<&'input str>),
+		"str" => Token::String(<&'input str>),
+		"var" => Token::Variable(<&'input str>),
+		"char" => Token::Char(<char>),
+		"static" => Token::Static,
+		"mut" => Token::Mut,
+
+		"(" => Token::ParenLeft,
+		")" => Token::ParenRight,
+		"[" => Token::BrackLeft,
+		"]" => Token::BrackRight,
+		"{" => Token::CurlyLeft,
+		"}" => Token::CurlyRight,
+		"," => Token::Comma,
+		";" => Token::Semicolon,
+		"=>" => Token::Matches,
+		"=" => Token::Assign,
+		"+=" => Token::Reassign(<&'input str>),
+		"if" => Token::If,
+		"else" => Token::Else,
+		"for" => Token::For,
+		"while" => Token::While,
+		"continue" => Token::Continue,
+		"break" => Token::Break,
+		"lambda" => Token::Lambda,
+		"to" => Token::To,
+		"let" => Token::Let,
+		"in" => Token::In,
+		"op" => Token::Operator(<&'input str>)
+    }
+}
+
+pub BlockNotR: StmtAST<'input> = {
+	"{"  "}" => StmtAST::Block(vec![]),
+	"{" <i: InnerBlock> "}" => StmtAST::Block(i)
+}
+
+pub BlockR: ExprAST<'input> = {
+	"{" <i: InnerBlock> <e: AssignL> "}" => ExprAST::Block(i, Box::new(e)),
+	"{" <e: AssignL> "}" => ExprAST::Block(vec![], Box::new(e))
+}
+
+pub InnerBlock: Vec<StmtAST<'input>> = {
+	<mut i: InnerBlock> <s: Stmt> => {i.push(s); i},
+	Stmt => vec![<>]
+}
+
+pub Stmt: StmtAST<'input>  = {
+	<a: AssignL> ";" => StmtAST::Expr(a),
+	NonRetIf => <>,
+	"while" <c: StmtLNB> <b: BlockNotR> => StmtAST::While(c, Box::new(b)),
+	ForLoop => <>,
+	Let => <>
+}
+
+pub Let: StmtAST<'input> = {
+	"let" <l: LetList> ";" => StmtAST::Let(l)
+}
+
+pub LetList: Vec<ExprAST<'input>> = {
+	<mut l: LetList> "," <a: AssignL> => {l.push(a); l},
+	<a: AssignL> => vec![a]
+}
+
+pub NonRetIf: StmtAST<'input> = {
+	"if" <c: StmtLNB> <b: BlockNotR> => StmtAST::If(c, Box::new(b)),
+	"if" <c: StmtLNB> <b: BlockNotR> "else" <e: NonRetIf> => StmtAST::IfElse(c, Box::new(b), Box::new(e)),
+	BlockNotR => <>
+}
+
+pub ForLoop: StmtAST<'input> = {
+	"for" <o: OldFor> <b: BlockNotR> => StmtAST::For(o, Box::new(b)),
+	"for" <i: InFor> <b: BlockNotR> => StmtAST::For(i, Box::new(b))
+}
+
+pub OldFor: ForAST<'input> = {
+	"(" <i: AssignL> ";" <c: AssignL> ";" <s: AssignL> ")" => ForAST::Old(Some(i), Some(c), Some(s)),
+	"(" <i: AssignL> ";" <c: AssignL> ";"")" => ForAST::Old(Some(i), Some(c), None),
+	"(" <i: AssignL> ";" ";" <s: AssignL> ")" => ForAST::Old(Some(i), None, Some(s)),
+	"(" <i: AssignL> ";" ";"")" => ForAST::Old(Some(i), None, None),
+	"(" ";" <c: AssignL> ";" <s: AssignL> ")" => ForAST::Old(None, Some(c), Some(s)),
+	"(" ";" <c: AssignL> ";"")" => ForAST::Old(None, Some(c), None),
+	"(" ";"";" <s: AssignL> ")" => ForAST::Old(None, None, Some(s)),
+	"(" ";"";"")" => ForAST::Old(None, None, None),
+}
+
+pub InFor: ForAST<'input> = {
+	<l: StmtL> "in" <r: StmtLNB> => ForAST::In(l, r),
+}
+
+pub AssignL: ExprAST<'input> = {
+	<a: StmtL> "=" <s: AssignL> => ExprAST::Assign(Box::new(a), Box::new(s)), 
+	<a: StmtL> => a
+}
+
+pub StmtLNB: ExprAST<'input> = {
+	<a: IfLNB> => a
+}
+
+pub StmtL: ExprAST<'input> = {
+	IfL "op" StmtL => match (<>) { (i, o, s) => ExprAST::Appl(vec![ExprAST::Op(o), i, s]) },
+	IfL => <>
+}
+
+pub RetIf: ExprAST<'input> = {
+	"if" <c: StmtLNB> <r: BlockR> "else" <e: RetIf> => ExprAST::IfElse(Box::new(c), Box::new(r), Box::new(e)),
+	BlockR => <>
+}
+
+pub IfLNB: ExprAST<'input>  = {
+	"lambda" <a: ApplLNB> "to" <b: IfLNB> => ExprAST::Lambda(a, Box::new(b)),
+	<a: ApplLNB> "to" <b: IfLNB> => ExprAST::Appl(vec![ExprAST::Op("->"), ExprAST::Appl(a), b]),
+	<a: ApplLNB> => ExprAST::Appl(a)
+}
+
+pub IfL: ExprAST<'input>  = {
+	"lambda" <a: ApplL> "to" <b: IfL> => ExprAST::Lambda(a, Box::new(b)),
+	<a: ApplL> "to" <b: IfL> => ExprAST::Appl(vec![ExprAST::Op("->"), ExprAST::Appl(a), b]),
+	RetIf => <>,
+	<a: ApplL> => ExprAST::Appl(a)
+}
+
+
+pub ApplLNB: Vec<ExprAST<'input>> = {
+	<mut a: ApplLNB> <b: LitNB> => {a.push(b); a},
+	<a: LitNB> => vec![a]
+}
+
+pub ApplL: Vec<ExprAST<'input>> = {
+	<mut a: ApplL> <b: Lit> => {a.push(b); a},
+	<a: Lit> => vec![a]
+}
+
+pub Var: ExprAST<'input> = {
+	"var" => ExprAST::Var(<>, false, false),
+	"static" "var" => ExprAST::Var((<>).1, true, false),
+	"mut" "var" => ExprAST::Var((<>).1, false, true),
+	"static" "mut" "var" => ExprAST::Var((<>).2, true, true)
+}
+
+pub InnerMatch: Vec<(ExprAST<'input>, ExprAST<'input>)> = {
+	<mut i: InnerMatch> "," <l: ApplL> "=>" <r: StmtL> => {i.push((ExprAST::Appl(l), r)); i},
+	<l: ApplL> "=>" <r: StmtL> => vec![(appl(l), r)]
+}
+
+pub Lit: ExprAST<'input> = {
+	LitNB => <>,
+	"{" <i: InnerMatch> "}" => ExprAST::Match(i)
+}
+
+pub InnerList: Vec<ExprAST<'input>> = {
+	<mut i: InnerList> "," <s: StmtL> => {i.push(s); i},
+	StmtL => vec![<>]
+}
+
+pub LitNB: ExprAST<'input> = {
+    "int" => ExprAST::Int(parse_int(<>)),
+	"str" => ExprAST::String(<>),
+	<v: Var> => v,
+    "(" <mut t:InnerList> ")" => if t.len() == 1 { ExprAST::Paren(Box::new(t.pop().unwrap())) } else { ExprAST::Tuple(t) } ,
+    "[" <mut t:InnerList> "]" => ExprAST::List(t),
+	"(" ")" => ExprAST::Void,
+};
+

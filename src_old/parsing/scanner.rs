@@ -1,14 +1,14 @@
 use std::{str::CharIndices, iter::Peekable};
+use super::token::Token;
 
-use super::token::{Token, Spanned};
+pub type Spanned<Tok, Loc, Error> = Result<(Loc, Tok, Loc), Error>;
 
-pub type LexResult<'a> = Spanned<Token<'a>, usize, LexErr>;
-#[derive(Clone, Debug)]
 pub enum LexErr {
-    EOF, InvalidChar, UnescapableChar, SecondDot, SecondDotAfterExp, SecondExp,
-    UnhandledeNewLine, UnhandledWhitespace, UnhandeledComment, UnhandledMultilineComment,
-    SingleHashTag
+    EOF
 }
+
+pub type LexResult<'a> = Result<Token<'a>, LexErr>;
+
 
 fn escapeable(c: char) -> bool {
     c == 'n' || c == 't' || c == 'w' || c == 'b' || c == 'f' || c == 'v' || c == '0' || c == 'r'
@@ -22,7 +22,7 @@ pub struct Scanner<'a> {
     string: &'a String,
     current_char_pos: usize,
     current_char_size: usize,
-    pub cache: Vec<(usize, Token<'a>, usize)>
+    pub cache: Vec<Token<'a>>
 }
 
 
@@ -41,7 +41,7 @@ impl<'a> Scanner<'a> {
 
     fn var_match(s: &'a str) -> Token {
         if s.starts_with('#') {
-            return Token::Tag(s);
+            return Token::Tag;
         }
         match s {
             "let" => Token::Let,
@@ -91,18 +91,22 @@ impl<'a> Scanner<'a> {
         self.current_line += 1;
     }
 
-    pub fn make_token<F>(&mut self, token_fn: F, offset: usize) -> (usize, Token<'a>, usize)
+    pub fn make_token<F>(&mut self, tokenFn: F, offset: usize) -> (usize, Token<'a>, usize)
     where F: Fn(&'a str) -> Token<'a> {
         let end = self.current_char_pos + self.current_char_size - 1;
-        let res = (offset, token_fn(&self.string[offset..=end]), end);
+        let res = (offset, tokenFn(&self.string[offset..=end]), end);
 
         self.current_char_pos += 1;
         res
     }
 
+    pub fn get_pos(&self) -> (usize, usize) {
+        (self.current_line_pos, self.current_char_pos)
+    }
 
     fn get_char(&mut self, offset: usize) -> LexResult<'a> {
         let c = self.expect_char()?;
+        let e = (String::from("invalid character"), self.get_pos());
         if c == '\\' {
             let c = self.expect_char()?;
             if escapeable(c) || c == '\'' {
@@ -111,19 +115,19 @@ impl<'a> Scanner<'a> {
                 while self.expect_char()?.is_digit(radix) {
                 }
 
-            } else { return Err(LexErr::InvalidChar); }
+            } else { return Err(e); }
 
             if self.expect_char()? == '\'' {
                 if c == '\n' { self.new_line(); }
-                Ok(self.make_token(|_| Token::Char(c), offset))
+                Ok(self.make_token(|s| TokenType::Char(c), offset))
             } else {
-                Err(LexErr::InvalidChar)
+                Err(e)
             }
 
         } else if self.expect_char()? == '\'' {
-            Ok(self.make_token(|_| Token::Char(c), offset))
+            Ok(self.make_token(|s| TokenType::Char(c), offset))
         } else {
-            Err(LexErr::InvalidChar)
+            Err(e)
         }
     }
 
@@ -140,7 +144,7 @@ impl<'a> Scanner<'a> {
                     while self.expect_char()?.is_digit(radix) {
                     }
                 } else {
-                    return Err(LexErr::UnescapableChar);
+                    return Err((String::from("invalid String, sth is not escaped!"), self.get_pos()));
                 }
             }
 
@@ -150,7 +154,7 @@ impl<'a> Scanner<'a> {
 
             cur_char = self.expect_char()?;
         }
-        Ok(self.make_token(|s| Token::String(s), offset))
+        Ok(self.make_token(|s| TokenType::Str(s), offset))
     }
 
     fn get_var(&mut self, offset: usize) -> LexResult<'a> {
@@ -180,10 +184,7 @@ impl<'a> Scanner<'a> {
                 },
                 _ => {
                     let slice = &self.string[offset..=self.current_char_pos+self.current_char_size - 1];
-                    return Ok(self.make_token(if slice == "=" || slice == "≔" { |_| Token::Assign}
-                                              else if slice.ends_with('=') {|s| Token::Reassign(s)}
-                                              else if slice == "->" {|s| Token::To}
-                                              else {|s| Token::Operator(s)}, offset))
+                    return Ok(self.make_token(if slice == "=" || slice == "≔" { |_| TokenType::Assign} else if slice.ends_with('=') {TokenType::Reassign} else {|_| TokenType::Operator}, offset))
                 }
             }
         }
@@ -196,19 +197,15 @@ impl<'a> Scanner<'a> {
         let mut just_exp = 0;
         let mut c = self.peek_char();
         let mut may_radix = 1;
-        let f = |c| if c == 'x' {16} else if c == 'o' {8} else if c == 'b' {2} else if c == 't' {3} else if c == '⚖' { -3 } else {10};
-        let mut radix = c.map_or(10isize, f);
+        let radix = c.map_or(10, |c| if c == 'x' {16} else if c == 'o' {8} else if c == 'b' {2} else {10});
 
         loop {
             match c {
-                Some('-') if just_exp > 0    => {float = true; self.expect_char()?;},
-                Some('+') if just_exp > 0    => {self.expect_char()?;},
-                Some('x') | Some('o') | Some('b') | Some('t') | Some('⚖') if may_radix > 0 => {self.expect_char()?; radix = c.map_or(10isize, f); },
-                Some(c) if radix == -3 && (c == '1' || c == '-' || c == '0') => {self.expect_char()?;}
-                Some(c) if radix != -3 && c.is_digit(radix as u32) => {self.expect_char()?;},
+                Some('x') | Some('o') | Some('b') if may_radix > 0 => {self.expect_char()?;},
+                Some(c) if c.is_digit(radix) => {self.expect_char()?;},
                 Some('_')                    => {self.expect_char()?;},
                 Some('.')                    => {
-                    let res = self.make_token(if float { |s| Token::Floating(s) } else { |s| Token::Integer(s) }, offset);
+                    let res = self.make_token(if float { |s| TokenType::Floating(s) } else { |s| TokenType::Integer(s) }, offset);
                     let o = self.current_char_pos;
                     self.current_char_pos -= 1;
                     self.expect_char()?;
@@ -219,19 +216,21 @@ impl<'a> Scanner<'a> {
                             if let Some('=') = self.peek_char() {
                                 self.expect_char()?;
                             }
-                            let token = self.make_token(|s| Token::Operator(s), o);
+                            let token = self.make_token(|s| TokenType::Operator(s), o);
                             self.cache.push(token);
                             return Ok(res);
                         }
-                        _ if float && !exp   => return Err(LexErr::SecondDot),
-                        _ if exp_float       => return Err(LexErr::SecondDotAfterExp),
+                        _ if float && !exp   => return self.err("second ."),
+                        _ if exp_float       => return self.err("second . after exponential"),
                         _ if !exp            => float = true,
                         _                    => {float = true; exp_float = true; self.expect_char()?;}
                     }
                 },
-                Some('e') if exp             => return Err(LexErr::SecondExp),
+                Some('-') if just_exp > 0    => {float = true; self.expect_char()?;},
+                Some('+') if just_exp > 0    => {self.expect_char()?;},
+                Some('e') if exp             => return self.err("second e, where there should be no exponential"),
                 Some('e')                    => {exp = true; self.expect_char()?; just_exp=2; may_radix = 2;},
-                _ => return Ok(self.make_token(if float { Token::Floating } else { Token::Integer }, offset)),
+                _ => return Ok(self.make_token(if float { |s| TokenType::Floating(s) } else { |s| TokenType::Integer(s) }, offset)),
             };
 
             if may_radix > 0 {
@@ -246,7 +245,17 @@ impl<'a> Scanner<'a> {
         }
     }
 
+    pub fn peek(&mut self) -> Option<LexResult<'a>> {
+        let val = self.next();
+        if let Some(Ok(tok)) = &val {
+            self.cache.push(tok.clone());
+        }
+        val
+    }
 
+    fn err(&self, static_: &'static str) -> LexResult<'a> {
+        Err((String::from(static_), self.get_pos()))
+    }
 }
 
 /*0x_a.e-o6.5*/
@@ -298,26 +307,25 @@ impl<'a> Iterator for Scanner<'a> {
 
             skip = false;
             result = Some(match c {
-                '\\' | 'λ' => Ok(self.make_token(|_| Token::Lambda, o)),
-                ';' | ';' => Ok(self.make_token(|_| Token::Semicolon, o)),
-                ',' => Ok(self.make_token(|_| Token::Comma, o)),
-                '(' | '（' => Ok(self.make_token(|_| Token::ParenLeft, o)),
-                ')' | '）' => Ok(self.make_token(|_| Token::ParenRight, o)),
-                '[' => Ok(self.make_token(|_| Token::BrackLeft, o)),
-                ']' => Ok(self.make_token(|_| Token::BrackRight, o)),
-                '{' => Ok(self.make_token(|_| Token::CurlyLeft, o)),
-                '}' => Ok(self.make_token(|_| Token::CurlyRight, o)),
+                '\\' | 'λ' => Ok(self.make_token(|_| TokenType::Lambda, o)),
+                ';' | ';' => Ok(self.make_token(|_| TokenType::Semicolon, o)),
+                '(' | '（' => Ok(self.make_token(|_| TokenType::ParenLeft, o)),
+                ')' | '）' => Ok(self.make_token(|_| TokenType::ParenRight, o)),
+                '[' => Ok(self.make_token(|_| TokenType::BrackLeft, o)),
+                ']' => Ok(self.make_token(|_| TokenType::BrackRight, o)),
+                '{' => Ok(self.make_token(|_| TokenType::CurlyLeft, o)),
+                '}' => Ok(self.make_token(|_| TokenType::CurlyRight, o)),
                 '#' | '' => {
                     match self.peek_char() {
-                        Some('#') | Some('') | Some('!') => {inline_comment = true; skip = true; Err(LexErr::UnhandeledComment)},
+                        Some('#') | Some('') | Some('!') => {inline_comment = true; skip = true; self.err("unhandeled comment")},
                         Some(c) if c.is_alphanumeric() => {self.next_char(); self.get_var(o)},
-                        Some('=') | Some('≝') => {self.next_char(); multiline_comment = true; skip = true; Err(LexErr::UnhandledMultilineComment)}
-                        Some(_) | None => Err(LexErr::SingleHashTag)
+                        Some('=') | Some('≝') => {self.next_char(); multiline_comment = true; skip = true; Err((String::from("unhandeled multiline comment"), self.get_pos()))}
+                        Some(_) | None => Err((String::from("Just a hashtag chillin, bro"), self.get_pos()))
                     }
                 }
-                '`' => Ok(self.make_token(|_| Token::Hyphen, o)),
-                '\n' => {self.new_line(); self.current_char_pos+=1; skip = true; Err(LexErr::UnhandledeNewLine)},
-                c if c.is_whitespace() => {self.current_char_pos+=1;skip = true; Err(LexErr::UnhandledWhitespace)},
+                '`' => Ok(self.make_token(|_| TokenType::Hyphen, o)),
+                '\n' => {self.new_line(); self.current_char_pos+=1; skip = true; self.err("unhandeled newline")},
+                c if c.is_whitespace() => {self.current_char_pos+=1;skip = true; self.err("unhandeled whitespace")},
                 '\'' => self.get_char(o),
                 '"' => self.get_string(o),
                 c if c.is_digit(10) => self.get_number(o),
